@@ -12,11 +12,13 @@
 
 package com.callverify
 
+import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.Header
 import retrofit2.http.POST
+import java.util.concurrent.TimeUnit
 
 data class IncomingCallBody(val callerPhone: String)
 data class IncomingCallResponse(val matched: Boolean)
@@ -30,12 +32,23 @@ interface CallVerifyApi {
 }
 
 object ApiService {
+    // مهلة قصيرة عمداً — العملية تعمل ضمن نافذة زمنية محدودة يحميها goAsync()،
+    // فيجب أن يفشل الطلب بسرعة بدل الانتظار للمهلة الافتراضية الطويلة
+    // Deliberately short timeouts — this runs inside the limited goAsync() window,
+    // so a failed request must fail fast instead of hanging on the long default timeout
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .build()
+
     fun build(baseUrl: String): CallVerifyApi {
         // تأكد أن baseUrl تنتهي بـ / وإلا Retrofit يرمي استثناء
         // Ensure baseUrl ends with / otherwise Retrofit throws an exception
         val normalizedUrl = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
         return Retrofit.Builder()
             .baseUrl(normalizedUrl)
+            .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(CallVerifyApi::class.java)
