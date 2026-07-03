@@ -12,17 +12,12 @@
 
 package com.callverify
 
-import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.database.Cursor
 import android.os.Build
 import android.os.PowerManager
-import android.provider.CallLog
 import android.telephony.TelephonyManager
-import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 
 // ============================================================
@@ -31,25 +26,27 @@ import kotlinx.coroutines.*
 // 🇸🇦 منذ أندرويد 10 (API 29)، نظام أندرويد يمنع تطبيقات الطرف
 //    الثالث (غير تطبيق الهاتف الافتراضي) من استقبال EXTRA_INCOMING_NUMBER
 //    ضمن بث ACTION_PHONE_STATE_CHANGED، حتى لو مُنحت كل الأذونات.
-//    لذلك نعتمد بدلاً من ذلك على قراءة سجل المكالمات (CallLog)
-//    بعد انتهاء الرنين مباشرة، وهي الطريقة الموثوقة الوحيدة
-//    المتاحة لتطبيق خارجي على أندرويد الحديث.
+//    الاعتماد الأساسي الآن على ContentObserver في CallService الذي يراقب
+//    سجل المكالمات مباشرة لحظة كتابته (بغض النظر عن التوقيت). هذا المستقبل
+//    (Receiver) يبقى فقط كطبقة احتياطية: يتأكد أن الخدمة تعمل، ويطلب فحصاً
+//    إضافياً لسجل المكالمات بعد انتهاء الرنين تحسباً لأي تأخير في تسليم
+//    تغييرات ContentObserver.
 //
 // 🇬🇧 Since Android 10 (API 29), the OS blocks third-party
 //    (non-default-dialer) apps from receiving EXTRA_INCOMING_NUMBER
 //    in the ACTION_PHONE_STATE_CHANGED broadcast, even with all
-//    permissions granted. Instead, we read the CallLog content
-//    provider right after the call ends/rings out — this is the
-//    only reliable method available to a third-party app on
-//    modern Android.
+//    permissions granted. The primary detection path is now the
+//    ContentObserver in CallService, which reacts the instant CallLog is
+//    written (no fixed-timing guesswork). This receiver is now just a
+//    backup layer: it makes sure the service is running and triggers an
+//    extra CallLog check after the ring ends, in case a ContentObserver
+//    notification is ever delayed or missed.
 // ============================================================
 class CallReceiver : BroadcastReceiver() {
 
     companion object {
         @Volatile
         private var wasRinging = false
-        @Volatile
-        private var ringStartTime = 0L
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -57,26 +54,39 @@ class CallReceiver : BroadcastReceiver() {
         if (intent.action != TelephonyManager.ACTION_PHONE_STATE_CHANGED) return
 
         val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+        val appContext = context.applicationContext
+
+        // نضمن تشغيل خدمة المراقبة عند أي تغيّر في حالة الهاتف — إذا كان
+        // النظام قد أوقفها، هذا يعيد تشغيلها فوراً (والخدمة نفسها تسجّل
+        // ContentObserver الذي يلتقط المكالمة الفائتة لحظة كتابتها)
+        // Make sure the monitoring service is running on any phone-state
+        // change — if the OS had stopped it, this restarts it immediately
+        // (the service itself registers the ContentObserver that captures
+        // the missed call the moment it's written)
+        try {
+            val serviceIntent = Intent(appContext, CallService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                appContext.startForegroundService(serviceIntent)
+            } else {
+                appContext.startService(serviceIntent)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         when (state) {
             TelephonyManager.EXTRA_STATE_RINGING -> {
-                // الهاتف بدأ يرن — نسجل الوقت وننتظر انتهاء الرنين
-                // Phone started ringing — remember the time and wait for it to stop
                 wasRinging = true
-                ringStartTime = System.currentTimeMillis()
             }
             TelephonyManager.EXTRA_STATE_IDLE -> {
-                // إذا كان يرن ثم عاد لحالة الخمول = مكالمة فائتة (لم تُجب)
-                // If it was ringing and returned to idle = missed call (not answered)
                 if (wasRinging) {
                     wasRinging = false
-                    val appContext = context.applicationContext
-                    val sinceRing = ringStartTime
 
-                    // نُبقي الجهاز مستيقظاً ونمدد عمر استقبال البث حتى لا يقتل النظام
-                    // العملية قبل أن تنتهي (خصوصاً عند إغلاق الشاشة مباشرة بعد المكالمة)
-                    // Keep the CPU awake and extend the receiver's lifetime so the OS
-                    // doesn't kill the process mid-work (especially right after screen-off)
+                    // نُبقي الجهاز مستيقظاً ونمدد عمر استقبال البث حتى لا يقتل
+                    // النظام العملية قبل أن ينتهي فحص سجل المكالمات الاحتياطي
+                    // Keep the CPU awake and extend the receiver's lifetime so
+                    // the OS doesn't kill the process before the backup
+                    // CallLog check finishes
                     val wakeLock = try {
                         val pm = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
                         pm.newWakeLock(
@@ -89,47 +99,16 @@ class CallReceiver : BroadcastReceiver() {
                     }
                     val pendingResult = goAsync()
 
-                    // نضمن تشغيل خدمة المراقبة أيضاً هنا — إذا كان النظام قد أوقفها
-                    // فهذا يعيد رفع أولوية العملية فوراً قبل محاولة قراءة السجل
-                    // Also (re)start the monitoring service here — if the OS had stopped
-                    // it, this immediately restores process priority before we proceed
-                    try {
-                        val serviceIntent = Intent(appContext, CallService::class.java)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            appContext.startForegroundService(serviceIntent)
-                        } else {
-                            appContext.startService(serviceIntent)
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
-                            // نتحقق من الإذن أولاً — بدونه لن نقدر نقرأ سجل المكالمات إطلاقاً
-                            // Check permission first — without it we can't read CallLog at all
-                            val hasPermission = ContextCompat.checkSelfPermission(
-                                appContext, Manifest.permission.READ_CALL_LOG
-                            ) == PackageManager.PERMISSION_GRANTED
-
-                            if (!hasPermission) {
-                                // لا يوجد إذن — لا فائدة من المحاولة
-                                // No permission — no point retrying
-                                return@launch
-                            }
-
-                            // محاولة فورية أولاً، ثم إعادة محاولات قصيرة — نبقى ضمن
-                            // النافذة الزمنية التي يضمنها goAsync (~10 ثوانٍ) لتفادي القتل
-                            // Try immediately first, then short retries — staying within
-                            // the window goAsync guarantees (~10s) to avoid being killed
-                            val delaysMs = longArrayOf(0, 800, 1500, 2500, 4000)
+                            // محاولات احتياطية قصيرة — الالتقاط الأساسي يتم عبر
+                            // ContentObserver، وهذه فقط شبكة أمان إضافية
+                            // Short backup retries — primary capture happens via
+                            // ContentObserver, this is just an extra safety net
+                            val delaysMs = longArrayOf(0, 1500, 3000, 5000)
                             for (waitMs in delaysMs) {
                                 if (waitMs > 0) delay(waitMs)
-                                val callerNumber = readLastMissedCallNumber(appContext, sinceRing)
-                                if (callerNumber != null) {
-                                    sendCallerToBackend(appContext, callerNumber)
-                                    break
-                                }
+                                CallLogReporter.checkAndReportLatest(appContext)
                             }
                         } finally {
                             try { wakeLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { e.printStackTrace() }
@@ -142,53 +121,6 @@ class CallReceiver : BroadcastReceiver() {
                 // تم الرد على المكالمة — لا تُعتبر فائتة | Call was answered — not missed
                 wasRinging = false
             }
-        }
-    }
-
-    // نقرأ آخر مكالمة فائتة سُجلت بعد لحظة بدء الرنين (لتفادي التقاط رقم قديم)
-    // Read the latest missed call recorded after the ring started (to avoid stale numbers)
-    private fun readLastMissedCallNumber(context: Context, sinceMillis: Long): String? {
-        var cursor: Cursor? = null
-        return try {
-            cursor = context.contentResolver.query(
-                CallLog.Calls.CONTENT_URI,
-                arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.TYPE, CallLog.Calls.DATE),
-                "${CallLog.Calls.TYPE} = ? AND ${CallLog.Calls.DATE} >= ?",
-                arrayOf(CallLog.Calls.MISSED_TYPE.toString(), (sinceMillis - 5000).toString()),
-                "${CallLog.Calls.DATE} DESC LIMIT 1"
-            )
-            if (cursor != null && cursor.moveToFirst()) {
-                val numberIndex = cursor.getColumnIndex(CallLog.Calls.NUMBER)
-                val number = if (numberIndex >= 0) cursor.getString(numberIndex) else null
-                if (!number.isNullOrBlank()) number else null
-            } else {
-                null
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        } finally {
-            cursor?.close()
-        }
-    }
-
-    private suspend fun sendCallerToBackend(context: Context, callerNumber: String) {
-        val prefs = context.getSharedPreferences("callverify", Context.MODE_PRIVATE)
-        val backendUrl = prefs.getString("backend_url", "") ?: return
-        val apiKey = prefs.getString("api_key", "") ?: return
-
-        if (backendUrl.isEmpty() || apiKey.isEmpty()) return
-
-        try {
-            val retrofit = ApiService.build(backendUrl)
-            retrofit.reportIncomingCall(
-                appSecret = apiKey,
-                body = IncomingCallBody(callerPhone = callerNumber)
-            )
-            // نجح الإرسال | Success — can log to LogCat for debugging
-        } catch (e: Exception) {
-            // فشل الإرسال — نُسجل للتتبع فقط | Failed — log for debugging only
-            e.printStackTrace()
         }
     }
 }
