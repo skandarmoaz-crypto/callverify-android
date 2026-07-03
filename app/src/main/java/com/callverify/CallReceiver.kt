@@ -18,6 +18,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
+import android.os.Build
+import android.os.PowerManager
 import android.provider.CallLog
 import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
@@ -70,29 +72,68 @@ class CallReceiver : BroadcastReceiver() {
                     wasRinging = false
                     val appContext = context.applicationContext
                     val sinceRing = ringStartTime
-                    CoroutineScope(Dispatchers.IO).launch {
-                        // نتحقق من الإذن أولاً — بدونه لن نقدر نقرأ سجل المكالمات إطلاقاً
-                        // Check permission first — without it we can't read CallLog at all
-                        val hasPermission = ContextCompat.checkSelfPermission(
-                            appContext, Manifest.permission.READ_CALL_LOG
-                        ) == PackageManager.PERMISSION_GRANTED
 
-                        if (!hasPermission) {
-                            // لا يوجد إذن — لا فائدة من المحاولة
-                            // No permission — no point retrying
-                            return@launch
+                    // نُبقي الجهاز مستيقظاً ونمدد عمر استقبال البث حتى لا يقتل النظام
+                    // العملية قبل أن تنتهي (خصوصاً عند إغلاق الشاشة مباشرة بعد المكالمة)
+                    // Keep the CPU awake and extend the receiver's lifetime so the OS
+                    // doesn't kill the process mid-work (especially right after screen-off)
+                    val wakeLock = try {
+                        val pm = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+                        pm.newWakeLock(
+                            PowerManager.PARTIAL_WAKE_LOCK,
+                            "CallVerify:missedCallWakeLock"
+                        ).apply { acquire(15_000L) }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        null
+                    }
+                    val pendingResult = goAsync()
+
+                    // نضمن تشغيل خدمة المراقبة أيضاً هنا — إذا كان النظام قد أوقفها
+                    // فهذا يعيد رفع أولوية العملية فوراً قبل محاولة قراءة السجل
+                    // Also (re)start the monitoring service here — if the OS had stopped
+                    // it, this immediately restores process priority before we proceed
+                    try {
+                        val serviceIntent = Intent(appContext, CallService::class.java)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            appContext.startForegroundService(serviceIntent)
+                        } else {
+                            appContext.startService(serviceIntent)
                         }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
 
-                        // نحاول عدة مرات لأن النظام قد يتأخر في كتابة السجل
-                        // Retry a few times since the system may delay writing the log entry
-                        val delaysMs = longArrayOf(1000, 2000, 3000, 5000)
-                        for (waitMs in delaysMs) {
-                            delay(waitMs)
-                            val callerNumber = readLastMissedCallNumber(appContext, sinceRing)
-                            if (callerNumber != null) {
-                                sendCallerToBackend(appContext, callerNumber)
-                                break
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            // نتحقق من الإذن أولاً — بدونه لن نقدر نقرأ سجل المكالمات إطلاقاً
+                            // Check permission first — without it we can't read CallLog at all
+                            val hasPermission = ContextCompat.checkSelfPermission(
+                                appContext, Manifest.permission.READ_CALL_LOG
+                            ) == PackageManager.PERMISSION_GRANTED
+
+                            if (!hasPermission) {
+                                // لا يوجد إذن — لا فائدة من المحاولة
+                                // No permission — no point retrying
+                                return@launch
                             }
+
+                            // محاولة فورية أولاً، ثم إعادة محاولات قصيرة — نبقى ضمن
+                            // النافذة الزمنية التي يضمنها goAsync (~10 ثوانٍ) لتفادي القتل
+                            // Try immediately first, then short retries — staying within
+                            // the window goAsync guarantees (~10s) to avoid being killed
+                            val delaysMs = longArrayOf(0, 800, 1500, 2500, 4000)
+                            for (waitMs in delaysMs) {
+                                if (waitMs > 0) delay(waitMs)
+                                val callerNumber = readLastMissedCallNumber(appContext, sinceRing)
+                                if (callerNumber != null) {
+                                    sendCallerToBackend(appContext, callerNumber)
+                                    break
+                                }
+                            }
+                        } finally {
+                            try { wakeLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { e.printStackTrace() }
+                            pendingResult.finish()
                         }
                     }
                 }
