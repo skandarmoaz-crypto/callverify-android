@@ -12,6 +12,7 @@ plugins {
 }
 
 android {
+    namespace "com.callverify"
     compileSdk 34
     defaultConfig {
         applicationId "com.callverify"
