@@ -13,6 +13,7 @@
 package com.callverify
 
 import android.Manifest
+import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -20,6 +21,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.telecom.TelecomManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 
@@ -83,6 +85,45 @@ class MainActivity : AppCompatActivity() {
         // Request battery-optimization exemption — required so the background
         // monitoring service isn't killed by the OS (Doze/App Standby)
         requestIgnoreBatteryOptimizations()
+
+        // طلب أن يصبح هذا التطبيق هو "تطبيق الهاتف الافتراضي" — عندها يعطينا
+        // نظام أندرويد رقم المتصل مباشرة ولحظياً بدون أي اعتماد على سجل
+        // المكالمات، وهذا يظهر للمستخدم كنافذة نظام رسمية تسأل: "هل تريد
+        // السماح لتطبيق CallVerify أن يكون تطبيق الهاتف الافتراضي؟"
+        // Request to become the "default Phone app" — Android then hands us
+        // the caller number directly and instantly, with no CallLog
+        // dependency at all. This shows the user an official system dialog:
+        // "Do you want CallVerify to be your default Phone app?"
+        requestDefaultDialerRole()
+    }
+
+    private fun requestDefaultDialerRole() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val roleManager = getSystemService(Context.ROLE_SERVICE) as RoleManager
+                if (roleManager.isRoleAvailable(RoleManager.ROLE_DIALER) &&
+                    !roleManager.isRoleHeld(RoleManager.ROLE_DIALER)
+                ) {
+                    val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER)
+                    startActivityForResult(intent, REQUEST_DEFAULT_DIALER)
+                }
+            } else {
+                val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                if (telecomManager.defaultDialerPackage != packageName) {
+                    val intent = Intent(TelecomManager.ACTION_CHANGE_DEFAULT_DIALER).apply {
+                        putExtra(TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, packageName)
+                    }
+                    startActivityForResult(intent, REQUEST_DEFAULT_DIALER)
+                }
+            }
+        } catch (e: Exception) {
+            // بعض الأجهزة قد لا تدعم هذا الدور | Some devices may not support this role
+            e.printStackTrace()
+        }
+    }
+
+    companion object {
+        private const val REQUEST_DEFAULT_DIALER = 2002
     }
 
     private fun requestIgnoreBatteryOptimizations() {

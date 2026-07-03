@@ -47,6 +47,30 @@ object CallLogReporter {
     private const val PREFS = "callverify"
     private const val KEY_LAST_ID = "last_reported_call_log_id"
 
+    // إرسال فوري ومباشر لرقم قادم من نظام الاتصالات مباشرة (InCallService) —
+    // هذا هو الرقم الحقيقي بدون أي حاجة لقراءة سجل المكالمات إطلاقاً، ويُستخدم
+    // فقط عندما يكون التطبيق هو تطبيق الهاتف الافتراضي
+    // Immediate, direct report of a number coming straight from the telecom
+    // system (InCallService) — the real number, no CallLog read needed at
+    // all. Used only when the app is the default Phone app.
+    suspend fun reportNumberDirectly(context: Context, number: String) {
+        val appContext = context.applicationContext
+        val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val backendUrl = prefs.getString("backend_url", "") ?: return
+        val apiKey = prefs.getString("api_key", "") ?: return
+        if (backendUrl.isEmpty() || apiKey.isEmpty()) return
+
+        try {
+            val retrofit = ApiService.build(backendUrl)
+            retrofit.reportIncomingCall(
+                appSecret = apiKey,
+                body = IncomingCallBody(callerPhone = number)
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     suspend fun checkAndReportLatest(context: Context) {
         val appContext = context.applicationContext
 

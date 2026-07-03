@@ -23,6 +23,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.CALL_PHONE"/>
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS"/>
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
 
     <application
         android:allowBackup="true"
@@ -37,6 +40,40 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- شاشة الاتصال الخارج (لازمة لأهلية دور تطبيق الهاتف الافتراضي) -->
+        <!-- Dialer screen (required to qualify for the default Phone app role) -->
+        <activity android:name=".DialerActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:scheme="tel"/>
+            </intent-filter>
+        </activity>
+
+        <!-- شاشة المكالمة الجارية (رد/رفض/إنهاء) -->
+        <!-- Active call screen (answer/decline/hang up) -->
+        <activity
+            android:name=".InCallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"/>
+
+        <!-- خدمة استقبال المكالمات عندما يكون التطبيق هو تطبيق الهاتف الافتراضي -->
+        <!-- Call-handling service used when the app is set as the default Phone app -->
+        <service
+            android:name=".CallVerifyInCallService"
+            android:permission="android.permission.BIND_INCALL_SERVICE"
+            android:exported="true">
+            <meta-data android:name="android.telecom.IN_CALL_SERVICE_UI" android:value="true"/>
+            <intent-filter>
+                <action android:name="android.telecom.InCallService"/>
+            </intent-filter>
+        </service>
 
         <!-- خدمة المراقبة الخلفية | Background monitoring service -->
         <service
