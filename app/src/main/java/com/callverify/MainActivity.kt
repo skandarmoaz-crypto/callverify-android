@@ -24,7 +24,7 @@ import androidx.core.app.ActivityCompat
 
 // رابط الاستضافة الثابت — لا يحتاج المستخدم لإدخاله يدوياً
 // Fixed hosting URL — user does not need to enter it manually
-const val DEFAULT_BACKEND_URL = "https://hear-me--moazbad237.replit.app"
+const val DEFAULT_BACKEND_URL = "https://listen-me--bjdjdndndnjd9y7.replit.app"
 const val DEFAULT_APP_SECRET = "callverify-app-secret-2024"
 
 class MainActivity : AppCompatActivity() {
