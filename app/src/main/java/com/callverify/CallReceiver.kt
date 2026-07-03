@@ -12,12 +12,15 @@
 
 package com.callverify
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.provider.CallLog
 import android.telephony.TelephonyManager
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 
 // ============================================================
@@ -43,6 +46,8 @@ class CallReceiver : BroadcastReceiver() {
     companion object {
         @Volatile
         private var wasRinging = false
+        @Volatile
+        private var ringStartTime = 0L
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -53,9 +58,10 @@ class CallReceiver : BroadcastReceiver() {
 
         when (state) {
             TelephonyManager.EXTRA_STATE_RINGING -> {
-                // الهاتف بدأ يرن — نسجل ذلك وننتظر انتهاء الرنين
-                // Phone started ringing — remember this and wait for it to stop
+                // الهاتف بدأ يرن — نسجل الوقت وننتظر انتهاء الرنين
+                // Phone started ringing — remember the time and wait for it to stop
                 wasRinging = true
+                ringStartTime = System.currentTimeMillis()
             }
             TelephonyManager.EXTRA_STATE_IDLE -> {
                 // إذا كان يرن ثم عاد لحالة الخمول = مكالمة فائتة (لم تُجب)
@@ -63,13 +69,30 @@ class CallReceiver : BroadcastReceiver() {
                 if (wasRinging) {
                     wasRinging = false
                     val appContext = context.applicationContext
+                    val sinceRing = ringStartTime
                     CoroutineScope(Dispatchers.IO).launch {
-                        // نمهل النظام لحظة ليكتب السجل في CallLog قبل قراءته
-                        // Give the system a moment to write the entry to CallLog
-                        delay(1500)
-                        val callerNumber = readLastMissedCallNumber(appContext)
-                        if (callerNumber != null) {
-                            sendCallerToBackend(appContext, callerNumber)
+                        // نتحقق من الإذن أولاً — بدونه لن نقدر نقرأ سجل المكالمات إطلاقاً
+                        // Check permission first — without it we can't read CallLog at all
+                        val hasPermission = ContextCompat.checkSelfPermission(
+                            appContext, Manifest.permission.READ_CALL_LOG
+                        ) == PackageManager.PERMISSION_GRANTED
+
+                        if (!hasPermission) {
+                            // لا يوجد إذن — لا فائدة من المحاولة
+                            // No permission — no point retrying
+                            return@launch
+                        }
+
+                        // نحاول عدة مرات لأن النظام قد يتأخر في كتابة السجل
+                        // Retry a few times since the system may delay writing the log entry
+                        val delaysMs = longArrayOf(1000, 2000, 3000, 5000)
+                        for (waitMs in delaysMs) {
+                            delay(waitMs)
+                            val callerNumber = readLastMissedCallNumber(appContext, sinceRing)
+                            if (callerNumber != null) {
+                                sendCallerToBackend(appContext, callerNumber)
+                                break
+                            }
                         }
                     }
                 }
@@ -81,22 +104,22 @@ class CallReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun readLastMissedCallNumber(context: Context): String? {
+    // نقرأ آخر مكالمة فائتة سُجلت بعد لحظة بدء الرنين (لتفادي التقاط رقم قديم)
+    // Read the latest missed call recorded after the ring started (to avoid stale numbers)
+    private fun readLastMissedCallNumber(context: Context, sinceMillis: Long): String? {
         var cursor: Cursor? = null
         return try {
             cursor = context.contentResolver.query(
                 CallLog.Calls.CONTENT_URI,
                 arrayOf(CallLog.Calls.NUMBER, CallLog.Calls.TYPE, CallLog.Calls.DATE),
-                null,
-                null,
+                "${CallLog.Calls.TYPE} = ? AND ${CallLog.Calls.DATE} >= ?",
+                arrayOf(CallLog.Calls.MISSED_TYPE.toString(), (sinceMillis - 5000).toString()),
                 "${CallLog.Calls.DATE} DESC LIMIT 1"
             )
             if (cursor != null && cursor.moveToFirst()) {
-                val typeIndex = cursor.getColumnIndex(CallLog.Calls.TYPE)
                 val numberIndex = cursor.getColumnIndex(CallLog.Calls.NUMBER)
-                val type = if (typeIndex >= 0) cursor.getInt(typeIndex) else -1
                 val number = if (numberIndex >= 0) cursor.getString(numberIndex) else null
-                if (type == CallLog.Calls.MISSED_TYPE && !number.isNullOrBlank()) number else null
+                if (!number.isNullOrBlank()) number else null
             } else {
                 null
             }
