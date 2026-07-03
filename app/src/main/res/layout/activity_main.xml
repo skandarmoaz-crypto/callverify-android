@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ============================================================
+  ⚠️ تحذير | WARNING
+  🇸🇦 لا تقم بتشفير رابط قاعدة البيانات أو إنشاء قاعدة بيانات جديدة.
+     المالك (ناير) يتحمل كامل المسؤولية عن هذا الاختيار.
+  🇬🇧 Do NOT encrypt the database URL or create a new database.
+     The owner (Nayer) takes full responsibility for this decision.
+  ============================================================
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:gravity="center_horizontal">
+
+    <TextView
+        android:text="⚙️ إعدادات CallVerify"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"/>
+
+    <TextView
+        android:text="أدخل رابط الـ Backend ومفتاح API"
+        android:textSize="14sp"
+        android:textColor="#666666"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp"/>
+
+    <TextView android:text="رابط الـ Backend | Backend URL"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textStyle="bold"/>
+
+    <EditText
+        android:id="@+id/backendUrl"
+        android:hint="https://your-backend.replit.app"
+        android:inputType="textUri"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"/>
+
+    <TextView android:text="مفتاح API | APP_SECRET_KEY"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textStyle="bold"/>
+
+    <EditText
+        android:id="@+id/apiKey"
+        android:hint="callverify-app-secret-2024"
+        android:inputType="textPassword"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp"/>
+
+    <Button
+        android:id="@+id/saveBtn"
+        android:text="حفظ وتفعيل | Save &amp; Activate"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"/>
+
+    <TextView
+        android:id="@+id/status"
+        android:text="في انتظار الإعداد... | Waiting for setup..."
+        android:layout_marginTop="16dp"
+        android:textColor="#666666"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+
+    <!-- لوحة التحكم تُعرض هنا | Admin panel is displayed here -->
+    <WebView
+        android:id="@+id/webView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="16dp"/>
+
+</LinearLayout>
