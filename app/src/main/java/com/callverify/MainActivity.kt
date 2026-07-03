@@ -77,6 +77,20 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = android.webkit.WebViewClient()
         webView.loadUrl(savedUrl)
 
+        // تشغيل خدمة المراقبة في الخلفية أولاً (لا تحتاج صلاحية خاصة)
+        // Start the background monitoring service first (no special permission needed)
+        try {
+            val serviceIntent = Intent(this, CallService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+        } catch (e: Exception) {
+            // لا نكسر التطبيق إذا فشل تشغيل الخدمة | Don't crash the app if the service fails to start
+            e.printStackTrace()
+        }
+
         // طلب الصلاحيات | Request permissions
         ActivityCompat.requestPermissions(
             this,
@@ -87,13 +101,5 @@ class MainActivity : AppCompatActivity() {
             ),
             1001
         )
-
-        // تشغيل خدمة المراقبة في الخلفية | Start background monitoring service
-        val serviceIntent = Intent(this, CallService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
-        }
     }
 }
