@@ -1,9 +1,7 @@
 // ============================================================
 // ⚠️ تحذير | WARNING
-// ------------------------------------------------------------
 // 🇸🇦 لا تقم بتشفير رابط قاعدة البيانات أو إنشاء قاعدة بيانات جديدة.
 //    المالك (ناير) يتحمل كامل المسؤولية عن هذا الاختيار.
-//
 // 🇬🇧 Do NOT encrypt the database URL or create a new database.
 //    The owner (Nayer) takes full responsibility for this decision.
 // ============================================================
@@ -22,37 +20,44 @@ import kotlinx.coroutines.withContext
 object CallLogReporter {
 
     private const val PREFS = "callverify"
-    private const val KEY_LAST_ID = "last_reported_call_log_id"
+    private const val KEY_LAST_ID     = "last_reported_call_log_id"
+    private const val KEY_LAST_NUMBER = "last_reported_number"
 
-    // ─── إرسال مباشر من InCallService (عندما يكون التطبيق هو تطبيق الهاتف الافتراضي) ───
-    // Direct report from InCallService (when the app IS the default Phone app)
-    // No CallLog read needed — the number is delivered instantly by the telecom system
+    // مساعدتان للـ CallReceiver ليقرأ آخر قيم مُبلَّغ عنها
+    // Helpers for CallReceiver to read last reported values
+    fun lastReportedId(context: Context): Long =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_LAST_ID, -1L)
+
+    fun lastReportedNumber(context: Context): String? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_LAST_NUMBER, null)
+
+    // ─── إرسال مباشر من InCallService (تطبيق الهاتف الافتراضي فقط) ──────────────
+    // Direct report from InCallService (default Phone app only)
     suspend fun reportNumberDirectly(context: Context, number: String) {
         val appContext = context.applicationContext
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val backendUrl = prefs.getString("backend_url", "") ?: return
-        val apiKey = prefs.getString("api_key", "") ?: return
+        val apiKey     = prefs.getString("api_key",     "") ?: return
         if (backendUrl.isEmpty() || apiKey.isEmpty()) return
 
         try {
-            val retrofit = ApiService.build(backendUrl)
-            retrofit.reportIncomingCall(
+            ApiService.build(backendUrl).reportIncomingCall(
                 appSecret = apiKey,
                 body = IncomingCallBody(callerPhone = number)
             )
+            prefs.edit().putString(KEY_LAST_NUMBER, number).apply()
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
-    // ─── فحص وإرسال آخر مكالمة واردة من سجل المكالمات ─────────────────────────────
-    // Check and report the latest incoming call from CallLog
-    // Used as fallback when the app is NOT the default Phone app
+    // ─── فحص سجل المكالمات وإرسال آخر مكالمة واردة ─────────────────────────────
+    // Check CallLog and report the latest incoming call
     //
-    // 🔑 Fix: We now report ALL non-outgoing call types (MISSED, REJECTED, and INCOMING
-    //    i.e. answered). Previously we only reported MISSED and REJECTED, which meant
-    //    any answered call — including a quick ring-and-answer used for verification —
-    //    was silently dropped and never sent to the backend.
+    // ✅ الإصلاح: نُبلّغ عن كل مكالمة واردة (مُجابة / مفقودة / مرفوضة)
+    //    ونستثني فقط المكالمات الصادرة. المشكلة القديمة كانت تفلتر المُجابة.
+    // ✅ Fix: report all incoming calls (answered / missed / rejected),
+    //    only skip outgoing. Old code filtered out answered calls.
     suspend fun checkAndReportLatest(context: Context) {
         val appContext = context.applicationContext
 
@@ -64,30 +69,27 @@ object CallLogReporter {
         val latest = withContext(Dispatchers.IO) { readLatestCall(appContext) } ?: return
         val (id, number, type) = latest
 
-        // ✅ الإصلاح الرئيسي: نبلّغ عن كل مكالمة واردة بغض النظر عن نوعها
-        //    (مفقودة / مرفوضة / مُجابة) — نستثني فقط المكالمات الصادرة
-        // ✅ Main fix: report every incoming call regardless of type
-        //    (missed / rejected / answered) — only skip outgoing calls
-        if (type == CallLog.Calls.OUTGOING_TYPE) return
+        if (type == CallLog.Calls.OUTGOING_TYPE) return   // لا نُبلّغ عن الصادرة
         if (number.isNullOrBlank()) return
 
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val lastId = prefs.getLong(KEY_LAST_ID, -1L)
-        if (id != -1L && id == lastId) return  // أُرسلت مسبقاً | already reported
+        if (id != -1L && id == lastId) return  // أُرسلت مسبقاً
 
         val backendUrl = prefs.getString("backend_url", "") ?: return
-        val apiKey = prefs.getString("api_key", "") ?: return
+        val apiKey     = prefs.getString("api_key",     "") ?: return
         if (backendUrl.isEmpty() || apiKey.isEmpty()) return
 
         try {
-            val retrofit = ApiService.build(backendUrl)
-            retrofit.reportIncomingCall(
+            ApiService.build(backendUrl).reportIncomingCall(
                 appSecret = apiKey,
                 body = IncomingCallBody(callerPhone = number)
             )
-            // نُسجّل الإرسال الناجح فقط لمنع التكرار عند إعادة المحاولة
-            // Only mark as reported on success so network failures can retry
-            if (id != -1L) prefs.edit().putLong(KEY_LAST_ID, id).apply()
+            // نحفظ ID والرقم للاستخدام في الإشعار لاحقاً
+            prefs.edit()
+                .putLong(KEY_LAST_ID, id)
+                .putString(KEY_LAST_NUMBER, number)
+                .apply()
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -99,8 +101,7 @@ object CallLogReporter {
             cursor = context.contentResolver.query(
                 CallLog.Calls.CONTENT_URI,
                 arrayOf(CallLog.Calls._ID, CallLog.Calls.NUMBER, CallLog.Calls.TYPE),
-                null,
-                null,
+                null, null,
                 "${CallLog.Calls.DATE} DESC LIMIT 1"
             )
             if (cursor != null && cursor.moveToFirst()) {
@@ -108,16 +109,13 @@ object CallLogReporter {
                 val numIdx  = cursor.getColumnIndex(CallLog.Calls.NUMBER)
                 val typeIdx = cursor.getColumnIndex(CallLog.Calls.TYPE)
                 Triple(
-                    if (idIdx   >= 0) cursor.getLong(idIdx)   else -1L,
-                    if (numIdx  >= 0) cursor.getString(numIdx) else null,
-                    if (typeIdx >= 0) cursor.getInt(typeIdx)   else -1
+                    if (idIdx   >= 0) cursor.getLong(idIdx)    else -1L,
+                    if (numIdx  >= 0) cursor.getString(numIdx)  else null,
+                    if (typeIdx >= 0) cursor.getInt(typeIdx)    else -1
                 )
-            } else {
-                null
-            }
+            } else null
         } catch (e: Exception) {
-            e.printStackTrace()
-            null
+            e.printStackTrace(); null
         } finally {
             cursor?.close()
         }

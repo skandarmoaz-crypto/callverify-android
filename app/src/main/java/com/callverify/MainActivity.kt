@@ -14,62 +14,97 @@ package com.callverify
 
 import android.Manifest
 import android.app.role.RoleManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.telecom.TelecomManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 
-// رابط الاستضافة الثابت وسر التطبيق — مضمّنان داخلياً، لا واجهة إعدادات للمستخدم
-// Fixed hosting URL and app secret — hardcoded internally, no user-facing settings screen
 const val DEFAULT_BACKEND_URL = "https://listen-to-me--emoazvjd8.replit.app"
-const val DEFAULT_APP_SECRET = "callverify-app-secret-2024"
+const val DEFAULT_APP_SECRET  = "callverify-app-secret-2024"
 
 class MainActivity : AppCompatActivity() {
+
+    private lateinit var webView: WebView
+
+    // مستقبل يُجدّد الـ WebView فور وصول إشعار "تم رصد مكالمة"
+    // Receiver that refreshes WebView as soon as a call-detected broadcast arrives
+    private val callDetectedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            // تأخير بسيط ليتسع الوقت للـ Backend يسجل المكالمة قبل التحديث
+            // Short delay so the backend has time to record the call before we refresh
+            Handler(Looper.getMainLooper()).postDelayed({
+                webView.reload()
+            }, 1_500L)
+        }
+    }
+
+    // تجديد دوري كل 60 ثانية لضمان ظهور البيانات حتى لو فات الـ broadcast
+    // Periodic 60 s refresh as safety net in case the broadcast was missed
+    private val periodicRefresher = object : Runnable {
+        override fun run() {
+            if (!isFinishing) {
+                webView.reload()
+                handler.postDelayed(this, 60_000L)
+            }
+        }
+    }
+    private val handler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // نحفظ الإعدادات الثابتة داخلياً تلقائياً — بدون أي تدخل أو واجهة من المستخدم
-        // Auto-save the fixed configuration internally — no user interaction or UI needed
-        val prefs = getSharedPreferences("callverify", Context.MODE_PRIVATE)
-        prefs.edit()
+        // حفظ الإعدادات الثابتة تلقائياً | Save fixed config automatically
+        getSharedPreferences("callverify", Context.MODE_PRIVATE).edit()
             .putString("backend_url", DEFAULT_BACKEND_URL)
-            .putString("api_key", DEFAULT_APP_SECRET)
+            .putString("api_key",     DEFAULT_APP_SECRET)
             .apply()
 
-        // عرض لوحة التحكم بملء الشاشة | Show the admin panel filling the entire screen
-        val webView = findViewById<android.webkit.WebView>(R.id.webView)
+        // ─── إعداد الـ WebView ─────────────────────────────────────────────────
+        webView = findViewById(R.id.webView)
         webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            loadWithOverviewMode = true
-            useWideViewPort = true
+            javaScriptEnabled     = true
+            domStorageEnabled     = true
+            loadWithOverviewMode  = true
+            useWideViewPort       = true
+            databaseEnabled       = true
         }
-        webView.webViewClient = android.webkit.WebViewClient()
+        // نفتح الروابط الخارجية في المتصفح ونبقي الـ WebView للوحة التحكم فقط
+        // Open external links in browser; keep WebView for admin panel only
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val url = request.url.toString()
+                return if (url.startsWith(DEFAULT_BACKEND_URL)) {
+                    false // بنفتحها داخلياً | open internally
+                } else {
+                    startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                    true
+                }
+            }
+        }
         webView.loadUrl(DEFAULT_BACKEND_URL)
 
-        // تشغيل خدمة المراقبة في الخلفية أولاً (لا تحتاج صلاحية خاصة)
-        // Start the background monitoring service first (no special permission needed)
+        // ─── تشغيل خدمة المراقبة ───────────────────────────────────────────────
         try {
-            val serviceIntent = Intent(this, CallService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-        } catch (e: Exception) {
-            // لا نكسر التطبيق إذا فشل تشغيل الخدمة | Don't crash the app if the service fails to start
-            e.printStackTrace()
-        }
+            val svc = Intent(this, CallService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc)
+            else startService(svc)
+        } catch (e: Exception) { e.printStackTrace() }
 
-        // طلب الصلاحيات | Request permissions
+        // ─── طلب الصلاحيات ────────────────────────────────────────────────────
         ActivityCompat.requestPermissions(
             this,
             arrayOf(
@@ -80,21 +115,44 @@ class MainActivity : AppCompatActivity() {
             1001
         )
 
-        // طلب استثناء التطبيق من تحسين البطارية — ضروري لضمان استمرار عمل
-        // خدمة المراقبة في الخلفية دون أن يوقفها النظام (Doze/App Standby)
-        // Request battery-optimization exemption — required so the background
-        // monitoring service isn't killed by the OS (Doze/App Standby)
+        // ─── إعفاء البطارية ───────────────────────────────────────────────────
         requestIgnoreBatteryOptimizations()
 
-        // طلب أن يصبح هذا التطبيق هو "تطبيق الهاتف الافتراضي" — عندها يعطينا
-        // نظام أندرويد رقم المتصل مباشرة ولحظياً بدون أي اعتماد على سجل
-        // المكالمات، وهذا يظهر للمستخدم كنافذة نظام رسمية تسأل: "هل تريد
-        // السماح لتطبيق CallVerify أن يكون تطبيق الهاتف الافتراضي؟"
-        // Request to become the "default Phone app" — Android then hands us
-        // the caller number directly and instantly, with no CallLog
-        // dependency at all. This shows the user an official system dialog:
-        // "Do you want CallVerify to be your default Phone app?"
+        // ─── طلب "تطبيق الهاتف الافتراضي" ────────────────────────────────────
+        // هذه الخطوة هي المفتاح للحصول على رقم المتصل فورياً — تظهر نافذة نظام
+        // رسمية، يجب أن يقبلها المستخدم
+        // This step is the key to getting the caller number instantly — an official
+        // system dialog appears; the user MUST accept it
         requestDefaultDialerRole()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // تجديد فور العودة للتطبيق | Refresh when app comes to foreground
+        webView.reload()
+
+        // الاستماع لبث "تم رصد مكالمة" | Listen for call-detected broadcasts
+        val filter = IntentFilter(ACTION_CALL_DETECTED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(callDetectedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(callDetectedReceiver, filter)
+        }
+
+        // بدء التجديد الدوري | Start periodic refresh
+        handler.postDelayed(periodicRefresher, 60_000L)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        try { unregisterReceiver(callDetectedReceiver) } catch (_: Exception) {}
+        handler.removeCallbacks(periodicRefresher)
+    }
+
+    override fun onBackPressed() {
+        // الـ WebView يتصفح للخلف بدل إغلاق التطبيق | WebView goes back instead of closing
+        if (webView.canGoBack()) webView.goBack()
+        else super.onBackPressed()
     }
 
     private fun requestDefaultDialerRole() {
@@ -102,43 +160,47 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val roleManager = getSystemService(Context.ROLE_SERVICE) as RoleManager
                 if (roleManager.isRoleAvailable(RoleManager.ROLE_DIALER) &&
-                    !roleManager.isRoleHeld(RoleManager.ROLE_DIALER)
-                ) {
-                    val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER)
-                    startActivityForResult(intent, REQUEST_DEFAULT_DIALER)
+                    !roleManager.isRoleHeld(RoleManager.ROLE_DIALER)) {
+                    startActivityForResult(
+                        roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER),
+                        REQUEST_DEFAULT_DIALER
+                    )
                 }
             } else {
-                val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-                if (telecomManager.defaultDialerPackage != packageName) {
-                    val intent = Intent(TelecomManager.ACTION_CHANGE_DEFAULT_DIALER).apply {
-                        putExtra(TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, packageName)
-                    }
-                    startActivityForResult(intent, REQUEST_DEFAULT_DIALER)
+                val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+                if (tm.defaultDialerPackage != packageName) {
+                    startActivityForResult(
+                        Intent(TelecomManager.ACTION_CHANGE_DEFAULT_DIALER).apply {
+                            putExtra(TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, packageName)
+                        },
+                        REQUEST_DEFAULT_DIALER
+                    )
                 }
             }
-        } catch (e: Exception) {
-            // بعض الأجهزة قد لا تدعم هذا الدور | Some devices may not support this role
-            e.printStackTrace()
-        }
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
-    companion object {
-        private const val REQUEST_DEFAULT_DIALER = 2002
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_DEFAULT_DIALER) {
+            // بعد قبول/رفض دور تطبيق الهاتف، نجدد الـ WebView
+            // After accepting/declining the phone-app role, refresh WebView
+            webView.reload()
+        }
     }
 
     private fun requestIgnoreBatteryOptimizations() {
         try {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                     data = Uri.parse("package:$packageName")
-                }
-                startActivity(intent)
+                })
             }
-        } catch (e: Exception) {
-            // بعض الأجهزة (خصوصاً بعض واجهات الشركات المصنّعة) قد تمنع هذا الطلب
-            // Some devices (especially certain OEM skins) may block this request
-            e.printStackTrace()
-        }
+        } catch (e: Exception) { e.printStackTrace() }
+    }
+
+    companion object {
+        private const val REQUEST_DEFAULT_DIALER = 2002
     }
 }
