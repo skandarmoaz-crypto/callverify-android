@@ -58,10 +58,8 @@
       suspend fun reportNumberDirectly(context: Context, number: String) {
           val appContext = context.applicationContext
           val prefs      = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-          val backendUrl = prefs.getString("backend_url", "") ?: return
-          val apiKey     = prefs.getString("api_key",     "") ?: return
-          if (backendUrl.isEmpty() || apiKey.isEmpty()) return
-
+          val backendUrl = prefs.getString("backend_url", DEFAULT_BACKEND_URL) ?: return
+          val apiKey     = prefs.getString("api_key", DEFAULT_APP_SECRET) ?: return
           mutex.withLock {
               val now = System.currentTimeMillis()
               // ✅ dedup: نفس الرقم خلال نافذة 30 ثانية → تجاهل
@@ -123,8 +121,8 @@
                   return@withLock
               }
 
-              val backendUrl = prefs.getString("backend_url", "") ?: return@withLock
-              val apiKey     = prefs.getString("api_key",     "") ?: return@withLock
+              val backendUrl = prefs.getString("backend_url", DEFAULT_BACKEND_URL) ?: return@withLock
+              val apiKey     = prefs.getString("api_key", DEFAULT_APP_SECRET) ?: return@withLock
               if (backendUrl.isEmpty() || apiKey.isEmpty()) return@withLock
 
               try {
