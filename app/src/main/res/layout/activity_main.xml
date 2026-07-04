@@ -1,28 +1,74 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  ============================================================
-  ⚠️ تحذير | WARNING
-  🇸🇦 لا تقم بتشفير رابط قاعدة البيانات أو إنشاء قاعدة بيانات جديدة.
-     المالك (ناير) يتحمل كامل المسؤولية عن هذا الاختيار.
-  🇬🇧 Do NOT encrypt the database URL or create a new database.
-     The owner (Nayer) takes full responsibility for this decision.
-
-  🇸🇦 شاشة الإعدادات (رابط Backend / مفتاح API) أُزيلت بالكامل من الواجهة.
-     الإعدادات الآن مضمّنة داخلياً في الكود (MainActivity.kt) ولا تظهر للمستخدم.
-     الـ WebView يملأ الشاشة بالكامل (طول وعرض).
-  🇬🇧 The settings screen (Backend URL / API key) has been fully removed
-     from the UI. Configuration is now hardcoded internally in
-     MainActivity.kt and never shown to the user. The WebView fills
-     the entire screen (full width and height).
-  ============================================================
+  ⚠️ لا تقم بإنشاء قاعدة بيانات جديدة — المالك (ناير) يتحمل كامل المسؤولية.
+  Do NOT create a new database — the owner (Nayer) takes full responsibility.
 -->
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:orientation="vertical">
 
+    <!-- شريط التحكم العلوي | Top control bar -->
+    <LinearLayout
+        android:id="@+id/controlBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="#1E3A8A"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp"
+        android:elevation="4dp">
+
+        <!-- أيقونة الهاتف | Phone icon -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📵"
+            android:textSize="20sp"
+            android:layout_marginEnd="10dp"/>
+
+        <!-- نص التسمية | Label -->
+        <TextView
+            android:id="@+id/autoRejectLabel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="رفض تلقائي للمكالمات"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:fontFamily="sans-serif-medium"/>
+
+        <!-- زر التفعيل | Toggle switch -->
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/autoRejectSwitch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:checked="false"/>
+
+    </LinearLayout>
+
+    <!-- نص الحالة الحالية | Current status text -->
+    <TextView
+        android:id="@+id/autoRejectStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#1a2d6b"
+        android:text="⚪ الوضع الحالي: مراقبة فقط"
+        android:textColor="#AABBDD"
+        android:textSize="12sp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"/>
+
+    <!-- لوحة التحكم عبر WebView | Admin panel via WebView -->
     <WebView
         android:id="@+id/webView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"/>
+        android:layout_height="0dp"
+        android:layout_weight="1"/>
 
-</FrameLayout>
+</LinearLayout>

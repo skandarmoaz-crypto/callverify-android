@@ -8,6 +8,7 @@
 
 package com.callverify
 
+import android.content.Context
 import android.content.Intent
 import android.telecom.Call
 import android.telecom.InCallService
@@ -16,15 +17,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-// ============================================================
-// 🇸🇦 هذه الخدمة تعمل فقط عندما يكون التطبيق هو "تطبيق الهاتف الافتراضي".
-//    عندها يسلّمنا نظام أندرويد رقم المتصل مباشرة ولحظياً عبر
-//    call.details.handle — بدون أي تأخير أو اعتماد على سجل المكالمات.
-//
-// 🇬🇧 This service only runs once the app is set as the "default Phone app".
-//    Android then hands us the caller number directly and instantly via
-//    call.details.handle — no delay, no CallLog dependency.
-// ============================================================
+// يعمل فقط عندما يكون التطبيق هو تطبيق الهاتف الافتراضي
+// Only active when the app is set as the default Phone app
 class CallVerifyInCallService : InCallService() {
 
     companion object {
@@ -35,35 +29,54 @@ class CallVerifyInCallService : InCallService() {
 
     override fun onCallAdded(call: Call) {
         super.onCallAdded(call)
-
-        // ✅ نُعيّن الـ call أولاً قبل فتح InCallActivity لتجنب race condition
-        // ✅ Set currentCall BEFORE launching InCallActivity to avoid race condition
         currentCall = call
 
         val isIncoming = call.details.callDirection == Call.Details.DIRECTION_INCOMING
-        val number = call.details.handle?.schemeSpecificPart
+        val number     = call.details.handle?.schemeSpecificPart
 
-        // إرسال فوري للرقم للـ Backend | Immediate number report to backend
-        if (isIncoming && !number.isNullOrBlank()) {
-            scope.launch {
-                CallLogReporter.reportNumberDirectly(applicationContext, number)
+        if (isIncoming) {
+            val prefs      = getSharedPreferences("callverify", Context.MODE_PRIVATE)
+            val autoReject = prefs.getBoolean(PREF_AUTO_REJECT, false)
+
+            if (autoReject) {
+                // ✅ رفض تلقائي: نرفض المكالمة فوراً ثم نبلّغ البـ backend بالرقم
+                // ✅ Auto-reject: reject immediately then report the number to backend
+                call.reject(false, null)
+
+                if (!number.isNullOrBlank()) {
+                    scope.launch {
+                        CallLogReporter.reportNumberDirectly(applicationContext, number)
+                    }
+                }
+
+                // لا نفتح InCallActivity — المكالمة انرفضت تلقائياً
+                // Don't open InCallActivity — call was auto-rejected
+                return
             }
+
+            // ─── الوضع الطبيعي: عرض شاشة المكالمة ──────────────────────────────
+            if (!number.isNullOrBlank()) {
+                scope.launch {
+                    CallLogReporter.reportNumberDirectly(applicationContext, number)
+                }
+            }
+
+            try {
+                startActivity(Intent(this, InCallActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT
+                })
+            } catch (e: Exception) { e.printStackTrace() }
         }
 
-        // تسجيل callback لرصد تغييرات الحالة | Register callback to track state changes
         call.registerCallback(object : Call.Callback() {
             override fun onStateChanged(c: Call, state: Int) {
                 when (state) {
-                    Call.STATE_DISCONNECTED -> {
-                        if (currentCall == c) currentCall = null
-                    }
-                    // ✅ إرسال احتياطي عند انتهاء المكالمة — يغطي الحالات التي
-                    //    يتأخر فيها handle للظهور في onCallAdded (بعض الشركات)
-                    // ✅ Backup report on disconnect — covers cases where handle
-                    //    is delayed in onCallAdded (happens on some OEMs)
+                    Call.STATE_DISCONNECTED  -> { if (currentCall == c) currentCall = null }
                     Call.STATE_DISCONNECTING -> {
+                        // backup: إرسال احتياطي في حال كان الرقم غير متاح في onCallAdded
                         val num = c.details?.handle?.schemeSpecificPart
-                        if (!num.isNullOrBlank() && c.details?.callDirection == Call.Details.DIRECTION_INCOMING) {
+                        if (!num.isNullOrBlank() &&
+                            c.details?.callDirection == Call.Details.DIRECTION_INCOMING) {
                             scope.launch {
                                 CallLogReporter.reportNumberDirectly(applicationContext, num)
                             }
@@ -72,16 +85,6 @@ class CallVerifyInCallService : InCallService() {
                 }
             }
         })
-
-        // فتح شاشة المكالمة | Open call screen
-        try {
-            val intent = Intent(this, InCallActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
     }
 
     override fun onCallRemoved(call: Call) {
