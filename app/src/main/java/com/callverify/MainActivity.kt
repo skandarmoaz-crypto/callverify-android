@@ -31,7 +31,7 @@
   import com.google.android.material.switchmaterial.SwitchMaterial
 
   const val DEFAULT_BACKEND_URL = "https://skandar5288-callverify-backend.hf.space"
-  const val DEFAULT_APP_SECRET  = "897829ef954df7f267d2b207368ecedf25062a7880b7136ed41368aa16de9232"
+  const val DEFAULT_APP_SECRET  = "callverify-app-secret-2024"
   const val DEFAULT_WEBVIEW_URL = "https://skandar5288-callverify-backend.hf.space/?auto=Admin%40E2251217"
   const val PREF_AUTO_REJECT    = "auto_reject"
 
