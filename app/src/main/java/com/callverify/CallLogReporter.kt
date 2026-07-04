@@ -15,16 +15,24 @@ import android.database.Cursor
 import android.provider.CallLog
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 object CallLogReporter {
 
-    private const val PREFS = "callverify"
+    private const val PREFS           = "callverify"
     private const val KEY_LAST_ID     = "last_reported_call_log_id"
     private const val KEY_LAST_NUMBER = "last_reported_number"
 
-    // مساعدتان للـ CallReceiver ليقرأ آخر قيم مُبلَّغ عنها
-    // Helpers for CallReceiver to read last reported values
+    // ✅ Mutex يضمن إن كوروتين واحد بس يدخل منطقة التحقق والإرسال في أي وقت —
+    //    هذا يحل مشكلة التكرار الناتجة عن race condition بين
+    //    ContentObserver + RINGING check + IDLE checks
+    // ✅ Mutex ensures only one coroutine at a time enters the check-and-report
+    //    section, fixing the duplicate-report race condition between
+    //    ContentObserver, RINGING check, and IDLE backup checks.
+    private val mutex = Mutex()
+
     fun lastReportedId(context: Context): Long =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_LAST_ID, -1L)
 
@@ -32,32 +40,28 @@ object CallLogReporter {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_LAST_NUMBER, null)
 
     // ─── إرسال مباشر من InCallService (تطبيق الهاتف الافتراضي فقط) ──────────────
-    // Direct report from InCallService (default Phone app only)
     suspend fun reportNumberDirectly(context: Context, number: String) {
         val appContext = context.applicationContext
-        val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs      = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val backendUrl = prefs.getString("backend_url", "") ?: return
         val apiKey     = prefs.getString("api_key",     "") ?: return
         if (backendUrl.isEmpty() || apiKey.isEmpty()) return
 
-        try {
-            ApiService.build(backendUrl).reportIncomingCall(
-                appSecret = apiKey,
-                body = IncomingCallBody(callerPhone = number)
-            )
-            prefs.edit().putString(KEY_LAST_NUMBER, number).apply()
-        } catch (e: Exception) {
-            e.printStackTrace()
+        mutex.withLock {
+            try {
+                ApiService.build(backendUrl).reportIncomingCall(
+                    appSecret = apiKey,
+                    body      = IncomingCallBody(callerPhone = number)
+                )
+                prefs.edit().putString(KEY_LAST_NUMBER, number).apply()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
-    // ─── فحص سجل المكالمات وإرسال آخر مكالمة واردة ─────────────────────────────
-    // Check CallLog and report the latest incoming call
-    //
-    // ✅ الإصلاح: نُبلّغ عن كل مكالمة واردة (مُجابة / مفقودة / مرفوضة)
-    //    ونستثني فقط المكالمات الصادرة. المشكلة القديمة كانت تفلتر المُجابة.
-    // ✅ Fix: report all incoming calls (answered / missed / rejected),
-    //    only skip outgoing. Old code filtered out answered calls.
+    // ─── فحص سجل المكالمات وإرسال آخر مكالمة واردة (مع حماية من التكرار) ───────
+    // Check CallLog and report the latest incoming call (duplicate-safe)
     suspend fun checkAndReportLatest(context: Context) {
         val appContext = context.applicationContext
 
@@ -69,29 +73,34 @@ object CallLogReporter {
         val latest = withContext(Dispatchers.IO) { readLatestCall(appContext) } ?: return
         val (id, number, type) = latest
 
-        if (type == CallLog.Calls.OUTGOING_TYPE) return   // لا نُبلّغ عن الصادرة
+        if (type == CallLog.Calls.OUTGOING_TYPE) return
         if (number.isNullOrBlank()) return
 
-        val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val lastId = prefs.getLong(KEY_LAST_ID, -1L)
-        if (id != -1L && id == lastId) return  // أُرسلت مسبقاً
+        // ✅ كل العمليات داخل الـ Mutex — لا يمكن لكوروتينين أن يمررا الفحص معاً
+        // ✅ All state checks inside the Mutex — no two coroutines can pass simultaneously
+        mutex.withLock {
+            val prefs  = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val lastId = prefs.getLong(KEY_LAST_ID, -1L)
 
-        val backendUrl = prefs.getString("backend_url", "") ?: return
-        val apiKey     = prefs.getString("api_key",     "") ?: return
-        if (backendUrl.isEmpty() || apiKey.isEmpty()) return
+            // تجاهل إذا نفس المكالمة أُرسلت مسبقاً
+            if (id != -1L && id == lastId) return@withLock
 
-        try {
-            ApiService.build(backendUrl).reportIncomingCall(
-                appSecret = apiKey,
-                body = IncomingCallBody(callerPhone = number)
-            )
-            // نحفظ ID والرقم للاستخدام في الإشعار لاحقاً
-            prefs.edit()
-                .putLong(KEY_LAST_ID, id)
-                .putString(KEY_LAST_NUMBER, number)
-                .apply()
-        } catch (e: Exception) {
-            e.printStackTrace()
+            val backendUrl = prefs.getString("backend_url", "") ?: return@withLock
+            val apiKey     = prefs.getString("api_key",     "") ?: return@withLock
+            if (backendUrl.isEmpty() || apiKey.isEmpty()) return@withLock
+
+            try {
+                ApiService.build(backendUrl).reportIncomingCall(
+                    appSecret = apiKey,
+                    body      = IncomingCallBody(callerPhone = number)
+                )
+                prefs.edit()
+                    .putLong(KEY_LAST_ID,     id)
+                    .putString(KEY_LAST_NUMBER, number)
+                    .apply()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
