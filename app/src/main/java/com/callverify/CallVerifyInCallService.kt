@@ -9,12 +9,14 @@
 package com.callverify
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.telecom.Call
 import android.telecom.InCallService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // يعمل فقط عندما يكون التطبيق هو تطبيق الهاتف الافتراضي
@@ -24,12 +26,8 @@ class CallVerifyInCallService : InCallService() {
     companion object {
         @Volatile var currentCall: Call? = null
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // ⚡ قيمة مخزنة في RAM — يُقرأ منها في onCallAdded بدون أي I/O
-        //    يُحدَّث من MainActivity عند تغيير الـ Toggle فوراً
-        // ⚡ In-RAM cache — read in onCallAdded with zero disk I/O
-        //    Updated immediately from MainActivity on toggle change
-        // ═══════════════════════════════════════════════════════════════════════
+        // ⚡ قيمة الرفض التلقائي مخزنة في RAM — لا يوجد قراءة ديسك في onCallAdded
+        // ⚡ Auto-reject flag cached in RAM — zero disk I/O in onCallAdded
         @Volatile var autoRejectEnabled: Boolean = false
     }
 
@@ -38,14 +36,9 @@ class CallVerifyInCallService : InCallService() {
 
     override fun onCreate() {
         super.onCreate()
-
-        // تحميل القيمة من الـ prefs مرة واحدة عند بدء الخدمة
-        // Load initial value from prefs once when service starts
         val prefs = getSharedPreferences("callverify", Context.MODE_PRIVATE)
         autoRejectEnabled = prefs.getBoolean(PREF_AUTO_REJECT, false)
 
-        // استمع لأي تغيير يحدث من Toggle في MainActivity
-        // Listen for toggle changes from MainActivity
         prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == PREF_AUTO_REJECT) {
                 autoRejectEnabled = prefs.getBoolean(PREF_AUTO_REJECT, false)
@@ -69,28 +62,45 @@ class CallVerifyInCallService : InCallService() {
         val isIncoming = call.details.callDirection == Call.Details.DIRECTION_INCOMING
         if (!isIncoming) return
 
-        val number = call.details.handle?.schemeSpecificPart
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // ⚡ رفض فائق السرعة: القراءة من @Volatile Boolean في RAM = نانوثوان
-        //    call.reject() يُرسَل للنظام فوراً بدون أي انتظار I/O
-        // ⚡ Ultra-fast reject: read @Volatile Boolean from RAM = nanoseconds
-        //    call.reject() sent to system immediately with zero I/O wait
-        // ═══════════════════════════════════════════════════════════════════════
         if (autoRejectEnabled) {
-            call.reject(false, null)      // ← الرفض يحدث هنا مباشرة — أسرع ممكن
+            // ══════════════════════════════════════════════════════════════════
+            // ⚡ الرفض الفائق: call.reject() يُرسل للنظام في نفس اللحظة
+            //    بدون أي انتظار — الـ handle قد يكون null لأن النظام لم يجهّزه بعد
+            //
+            // ⚡ Ultra-fast reject: call.reject() sent to system immediately
+            //    No waiting — handle may be null as system hasn't resolved it yet
+            // ══════════════════════════════════════════════════════════════════
+            val immediateNumber = call.details.handle?.schemeSpecificPart
+            call.reject(false, null)   // ← رفض فوري
 
-            // تبليغ الـ backend بالرقم في الخلفية (لا يؤخر الرفض)
-            // Report to backend in background (does NOT delay the reject)
-            if (!number.isNullOrBlank()) {
-                scope.launch {
-                    CallLogReporter.reportNumberDirectly(applicationContext, number)
+            scope.launch {
+                // 1️⃣ إذا كان الرقم متاحاً → أرسله فوراً
+                // 1️⃣ If number was available → report immediately
+                if (!immediateNumber.isNullOrBlank()) {
+                    CallLogReporter.reportNumberDirectly(applicationContext, immediateNumber)
                 }
+
+                // 2️⃣ انتظر ثانيتين ثم تحقق من سجل المكالمات
+                //    هذا يضمن رصد المكالمات حتى لو كان الرقم null في onCallAdded
+                //    الـ dedup يمنع الإرسال المزدوج إذا أُرسل بالفعل في الخطوة 1
+                // 2️⃣ Wait 2s then check call log — ensures call is captured even
+                //    if number was null above. Dedup blocks double-report from step 1.
+                delay(2_000L)
+                CallLogReporter.checkAndReportLatest(applicationContext)
+
+                // 3️⃣ أعلم الـ WebView بأن مكالمة تمت (كانت مفقودة في الإصدارات السابقة)
+                // 3️⃣ Notify WebView that a call occurred (was missing in previous versions)
+                try {
+                    sendBroadcast(
+                        Intent(ACTION_CALL_DETECTED).apply { setPackage(packageName) }
+                    )
+                } catch (_: Exception) {}
             }
-            return   // لا نفتح InCallActivity — المكالمة انرفضت تلقائياً
+            return
         }
 
-        // ─── الوضع الطبيعي: عرض شاشة المكالمة ──────────────────────────────
+        // ─── الوضع الطبيعي: مراقبة + شاشة المكالمة ───────────────────────────
+        val number = call.details.handle?.schemeSpecificPart
         if (!number.isNullOrBlank()) {
             scope.launch {
                 CallLogReporter.reportNumberDirectly(applicationContext, number)
@@ -99,9 +109,9 @@ class CallVerifyInCallService : InCallService() {
 
         try {
             startActivity(
-                android.content.Intent(this, InCallActivity::class.java).apply {
-                    flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
-                            android.content.Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT
+                Intent(this, InCallActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT
                 }
             )
         } catch (e: Exception) { e.printStackTrace() }
