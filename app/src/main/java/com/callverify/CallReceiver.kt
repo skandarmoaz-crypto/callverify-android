@@ -130,7 +130,8 @@
 
                       CoroutineScope(Dispatchers.IO).launch {
                           try {
-                              val delays = longArrayOf(600L, 2_500L, 5_000L)
+                              // ✅ delays مخفّضة للحد الأقصى للسرعة
+                      val delays = longArrayOf(100L, 400L, 1_000L)
                               var reported = false
                               for (waitMs in delays) {
                                   if (reported) break
