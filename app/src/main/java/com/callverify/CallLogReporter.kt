@@ -19,6 +19,19 @@
   import kotlinx.coroutines.sync.withLock
   import kotlinx.coroutines.withContext
 
+  // تحويل رقم الهاتف السوداني للصيغة الدولية قبل الإرسال
+  // Normalize Sudanese phone to international format before sending
+  // e.g. 0902288269 → +249902288269 | +249902288269 → +249902288269
+  fun normalizePhone(number: String): String {
+      val cleaned = number.trim().replace(Regex("[\\s\\-]"), "")
+      return when {
+          cleaned.startsWith("+")  -> cleaned
+          cleaned.startsWith("00") -> "+${cleaned.substring(2)}"
+          cleaned.startsWith("0")  -> "+249${cleaned.substring(1)}"
+          else                     -> "+249$cleaned"
+      }
+  }
+
   object CallLogReporter {
 
       private const val PREFS           = "callverify"
@@ -67,13 +80,14 @@
               if (number == lastDedupNumber && (now - lastDedupTimeMs) < DEDUP_WINDOW_MS) return@withLock
 
               try {
+                  val normalized = normalizePhone(number)
                   ApiService.build(backendUrl).reportIncomingCall(
                       appSecret = apiKey,
-                      body      = IncomingCallBody(callerPhone = number)
+                      body      = IncomingCallBody(callerPhone = normalized)
                   )
                   lastDedupNumber = number
                   lastDedupTimeMs = System.currentTimeMillis()
-                  prefs.edit().putString(KEY_LAST_NUMBER, number).apply()
+                  prefs.edit().putString(KEY_LAST_NUMBER, normalized).apply()
               } catch (e: Exception) {
                   e.printStackTrace()
               }
@@ -126,16 +140,17 @@
               if (backendUrl.isEmpty() || apiKey.isEmpty()) return@withLock
 
               try {
+                  val normalized = normalizePhone(number)
                   ApiService.build(backendUrl).reportIncomingCall(
                       appSecret = apiKey,
-                      body      = IncomingCallBody(callerPhone = number)
+                      body      = IncomingCallBody(callerPhone = normalized)
                   )
                   lastDedupNumber = number
                   lastDedupTimeMs = System.currentTimeMillis()
                   prefs.edit()
                       .putLong(KEY_LAST_ID,   id)
                       .putLong(KEY_LAST_DATE, callDate)
-                      .putString(KEY_LAST_NUMBER, number)
+                      .putString(KEY_LAST_NUMBER, normalized)
                       .apply()
               } catch (e: Exception) {
                   e.printStackTrace()
