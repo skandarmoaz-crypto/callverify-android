@@ -45,13 +45,13 @@
       @Volatile private var isInForeground = false
       @Volatile private var pendingRefresh  = false
 
-      // ── عند رصد مكالمة: انتظر 1.5 ثانية حتى يُسجّلها السيرفر ثم حدّث الصفحة
-      // On call detected: wait 1.5s for server to record it, then refresh page
+      // ── عند رصد مكالمة: انتظر 300ms فقط (السيرفر أكّد الاستلام قبل البث)
+      // On call detected: wait 300ms only (server already confirmed before broadcast)
       private val callDetectedReceiver = object : BroadcastReceiver() {
           override fun onReceive(context: Context?, intent: Intent?) {
               mainHandler.post {
                   if (isInForeground) {
-                      mainHandler.postDelayed({ safeReload() }, 1_500L)
+                      mainHandler.postDelayed({ safeReload() }, 300L)
                   } else {
                       pendingRefresh = true
                   }
