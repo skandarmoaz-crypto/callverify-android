@@ -42,62 +42,42 @@
       private lateinit var statusText: TextView
       private val mainHandler = Handler(Looper.getMainLooper())
 
-      // ══════════════════════════════════════════════════════════════════════════
-      // 🔧 الإصلاح الجذري لمشكلة عدم تحديث Dashboard:
-      //
-      //    المشكلة القديمة: المستقبل مسجّل في onResume/onPause فقط →
-      //    لما التطبيق في الخلفية يُلغى تسجيله → الـ broadcast يضيع.
-      //
-      //    الحل: نسجّل المستقبل في onCreate وننزعه في onDestroy فقط →
-      //    يعمل دائماً حتى لو التطبيق في الخلفية.
-      //
-      // 🔧 Root fix for Dashboard not updating:
-      //    Old: receiver registered in onResume/onPause → when app backgrounded
-      //         receiver is unregistered → broadcast is missed.
-      //    Fix: register in onCreate, unregister in onDestroy only →
-      //         always active regardless of app state.
-      // ══════════════════════════════════════════════════════════════════════════
-
-      // هل التطبيق في المقدمة؟ — نستخدمه لتحديد طريقة التحديث
-      // Is app in foreground? — used to choose refresh strategy
       @Volatile private var isInForeground = false
-
-      // هل يوجد تحديث معلّق؟ — يُطبَّق فور العودة للمقدمة
-      // Is a refresh pending? — applied immediately when returning to foreground
       @Volatile private var pendingRefresh  = false
 
+      // ── عند رصد مكالمة: انتظر 1.5 ثانية حتى يُسجّلها السيرفر ثم حدّث الصفحة
+      // On call detected: wait 1.5s for server to record it, then refresh page
       private val callDetectedReceiver = object : BroadcastReceiver() {
           override fun onReceive(context: Context?, intent: Intent?) {
               mainHandler.post {
                   if (isInForeground) {
-                      // التطبيق مرئي → تحديث فوري بعد 300ms (تقليل من 1500ms)
-                      // App visible → refresh after 300ms (reduced from 1500ms)
-                      mainHandler.postDelayed({ safeReload() }, 300L)
+                      mainHandler.postDelayed({ safeReload() }, 1_500L)
                   } else {
-                      // التطبيق في الخلفية → علّم بأن هناك تحديث معلّق
-                      // App in background → mark pending refresh
                       pendingRefresh = true
                   }
               }
           }
       }
 
-      // تحديث دوري خفيف كل 15 ثانية (بدل 60) — ضمان إضافي
-      // Light periodic refresh every 15s (instead of 60) — extra guarantee
+      // تحديث دوري كل 30 ثانية — ضمان إضافي فقط
+      // Periodic refresh every 30s — extra safety net only
       private val periodicRefresher = object : Runnable {
           override fun run() {
-              if (!isFinishing && isInForeground) {
-                  safeReload()
-                  mainHandler.postDelayed(this, 15_000L)
-              } else if (!isFinishing) {
-                  mainHandler.postDelayed(this, 15_000L)
+              if (!isFinishing) {
+                  if (isInForeground) safeReload()
+                  mainHandler.postDelayed(this, 30_000L)
               }
           }
       }
 
+      // ── تحديث بـ timestamp في الرابط لضمان جلب أحدث بيانات من السيرفر ──────
+      // Reload with timestamp param to bust server-side cache and get fresh data
       private fun safeReload() {
           try {
-              if (!isFinishing && !isDestroyed) webView.reload()
+              if (!isFinishing && !isDestroyed) {
+                  val freshUrl = "$DEFAULT_WEBVIEW_URL&_t=${System.currentTimeMillis()}"
+                  webView.loadUrl(freshUrl)
+              }
           } catch (_: Exception) {}
       }
 
@@ -106,25 +86,23 @@
           setContentView(R.layout.activity_main)
 
           val prefs = getSharedPreferences("callverify", Context.MODE_PRIVATE)
+
+          // ✅ الرفض التلقائي دائماً مفعّل ومثبّت — لا يمكن إيقافه
+          // ✅ Auto-reject always ON and locked — cannot be disabled
           prefs.edit()
               .putString("backend_url", DEFAULT_BACKEND_URL)
               .putString("api_key",     DEFAULT_APP_SECRET)
+              .putBoolean(PREF_AUTO_REJECT, true)
               .apply()
+          CallVerifyInCallService.autoRejectEnabled = true
 
-          // ─── Toggle الرفض التلقائي ─────────────────────────────────────────────
+          // ─── Toggle الرفض التلقائي — مثبّت دائماً (للعرض فقط) ───────────────
           autoRejectSwitch = findViewById(R.id.autoRejectSwitch)
           statusText       = findViewById(R.id.autoRejectStatus)
 
-          val savedValue = prefs.getBoolean(PREF_AUTO_REJECT, false)
-          autoRejectSwitch.isChecked = savedValue
-          CallVerifyInCallService.autoRejectEnabled = savedValue
-          updateStatusText(savedValue)
-
-          autoRejectSwitch.setOnCheckedChangeListener { _, isChecked ->
-              prefs.edit().putBoolean(PREF_AUTO_REJECT, isChecked).apply()
-              CallVerifyInCallService.autoRejectEnabled = isChecked
-              updateStatusText(isChecked)
-          }
+          autoRejectSwitch.isChecked = true
+          autoRejectSwitch.isEnabled = false   // مقفول — لا يمكن للمستخدم تغييره
+          statusText.text = "🔴 الوضع الحالي: رفض تلقائي فعّال دائماً"
 
           // ─── الـ WebView ───────────────────────────────────────────────────────
           webView = findViewById(R.id.webView)
@@ -134,12 +112,11 @@
               loadWithOverviewMode = true
               useWideViewPort      = true
               databaseEnabled      = true
-              // ✅ إلغاء الـ cache تماماً — يضمن أن كل reload يجيب أحدث بيانات من السيرفر
-              // ✅ Disable cache entirely — guarantees every reload fetches fresh data from server
-              cacheMode            = android.webkit.WebSettings.LOAD_NO_CACHE
+              // ✅ وضع افتراضي — يتحكم السيرفر في الـ cache عبر headers
+              // ✅ Default mode — server controls cache via its own HTTP headers
+              cacheMode            = android.webkit.WebSettings.LOAD_DEFAULT
           }
-          // ✅ مسح أي cache قديم من السيرفر السابق عند أول تشغيل
-          // ✅ Clear any old cache from the previous server on first launch
+          // مسح أي cache قديم من السيرفر السابق عند أول تشغيل
           webView.clearCache(true)
           webView.webViewClient = object : WebViewClient() {
               override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -148,10 +125,10 @@
                   else { startActivity(Intent(Intent.ACTION_VIEW, request.url)); true }
               }
           }
-          webView.loadUrl(DEFAULT_WEBVIEW_URL)
+          // تحميل الصفحة مع timestamp لجلب أحدث بيانات فور الفتح
+          webView.loadUrl("$DEFAULT_WEBVIEW_URL&_t=${System.currentTimeMillis()}")
 
-          // ─── تسجيل المستقبل هنا (onCreate) ليبقى نشطاً دائماً ────────────────
-          // Register receiver here (onCreate) to stay active always
+          // ─── تسجيل المستقبل في onCreate ليبقى نشطاً دائماً ──────────────────
           val filter = IntentFilter(ACTION_CALL_DETECTED)
           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
               registerReceiver(callDetectedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -179,21 +156,12 @@
           requestDefaultDialerRole()
 
           // ─── تشغيل المحدّث الدوري ─────────────────────────────────────────────
-          mainHandler.postDelayed(periodicRefresher, 15_000L)
-      }
-
-      private fun updateStatusText(autoRejectOn: Boolean) {
-          statusText.text = if (autoRejectOn)
-              "🔴 الوضع الحالي: رفض تلقائي فعّال — يتطلب تطبيق الهاتف الافتراضي"
-          else
-              "⚪ الوضع الحالي: مراقبة فقط"
+          mainHandler.postDelayed(periodicRefresher, 30_000L)
       }
 
       override fun onResume() {
           super.onResume()
           isInForeground = true
-          // طبّق التحديث المعلّق فوراً إن وجد
-          // Apply pending refresh immediately if any
           if (pendingRefresh) {
               pendingRefresh = false
               mainHandler.postDelayed({ safeReload() }, 300L)
@@ -207,8 +175,6 @@
 
       override fun onDestroy() {
           super.onDestroy()
-          // ← إلغاء تسجيل المستقبل هنا فقط (وليس في onPause)
-          // ← Unregister receiver here only (NOT in onPause)
           try { unregisterReceiver(callDetectedReceiver) } catch (_: Exception) {}
           mainHandler.removeCallbacks(periodicRefresher)
       }
@@ -254,4 +220,3 @@
           private const val REQUEST_DEFAULT_DIALER = 2002
       }
   }
-  
