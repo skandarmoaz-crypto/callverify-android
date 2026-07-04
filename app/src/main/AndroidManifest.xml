@@ -31,7 +31,7 @@
         android:allowBackup="true"
         android:label="CallVerify"
         android:icon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.AppCompat.Light.DarkActionBar"
+        android:theme="@style/Theme.AppCompat.Light.NoActionBar"
         android:usesCleartextTraffic="false">
 
         <activity android:name=".MainActivity" android:exported="true">
