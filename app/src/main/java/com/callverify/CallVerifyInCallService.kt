@@ -11,6 +11,7 @@
   import android.content.Context
   import android.content.Intent
   import android.content.SharedPreferences
+  import android.os.SystemClock
   import android.telecom.Call
   import android.telecom.InCallService
   import kotlinx.coroutines.CoroutineScope
@@ -29,6 +30,14 @@
           // ⚡ قيمة الرفض التلقائي مخزنة في RAM — لا يوجد قراءة ديسك في onCallAdded
           // ⚡ Auto-reject flag cached in RAM — zero disk I/O in onCallAdded
           @Volatile var autoRejectEnabled: Boolean = false
+
+          // ═══════════════════════════════════════════════════════════════
+          // وقت الرفض الثابت — يضمن دائماً نفس عدد الرنات (ربع جرسة)
+          // Fixed rejection target — guarantees consistent ring count (~1/4 ring)
+          // ═══════════════════════════════════════════════════════════════
+          private const val REJECT_TARGET_MS = 400L   // ms من onCallAdded حتى call.reject()
+          private const val POLL_INTERVAL_MS = 50L    // فترة polling لتحليل الـ handle
+          private const val POLL_MAX_COUNT   = 6      // أقصى 6 محاولات = 300ms
       }
 
       private val scope = CoroutineScope(Dispatchers.IO + Job())
@@ -64,57 +73,65 @@
 
           if (autoRejectEnabled) {
               // ══════════════════════════════════════════════════════════════════
-              // 🔧 الإصلاح: نرسل الرقم للسيرفر أولاً، ثم نرفض المكالمة
+              // 🔧 الإصلاح الشامل — يحل 4 مشاكل دفعة واحدة:
               //
-              //    المشكلة القديمة: call.reject() يحصل فورياً قبل إرسال الرقم،
-              //    وعندما يكون handle=null (النظام لم يجهّزه بعد) لا يُرسَل الرقم خالص.
+              //  ① رنات غير منضبطة → الرفض دائماً عند REJECT_TARGET_MS ثابت
+              //  ② رصد بطيء        → polling سريع للـ handle + إرسال موازٍ
+              //  ③ تكرار الرقم     → fallback فقط لو الرقم لم يُعثر عليه
+              //  ④ Dashboard لا يتحدث → broadcast بعد تأكيد السيرفر مباشرة
               //
-              //    الحل: ننتظر 300ms لتحليل الـ handle، نرسل الرقم، ثم نرفض.
-              //    إجمالي الوقت من بداية الرنين ≈ 300-400ms ≈ ربع جرس.
-              //
-              // 🔧 FIX: Report number to server FIRST, then reject the call.
-              //
-              //    Old problem: call.reject() fired immediately before reporting;
-              //    when handle=null (system not ready yet) the number was never sent.
-              //
-              //    Solution: wait 300ms for handle resolution, report, then reject.
-              //    Total time from ring start ≈ 300-400ms ≈ 1/4 ring.
+              // 🔧 Comprehensive fix — solves 4 issues at once:
+              //  ① Inconsistent rings → always reject at fixed REJECT_TARGET_MS
+              //  ② Slow detection     → fast handle polling + parallel reporting
+              //  ③ Number duplication → fallback only when number unavailable
+              //  ④ Dashboard stale    → broadcast sent right after server confirms
               // ══════════════════════════════════════════════════════════════════
               scope.launch {
-                  // 1️⃣ انتظر 300ms لتحليل الـ handle (ربع جرس تقريباً)
-                  //    Wait 300ms for handle resolution (~1/4 ring)
-                  delay(300L)
+                  val tStart = SystemClock.elapsedRealtime()
 
-                  // 2️⃣ احصل على الرقم بعد انتظار تحليل الـ handle
-                  //    Get number after handle has had time to resolve
-                  val number = call.details.handle?.schemeSpecificPart
-
-                  // 3️⃣ أرسل الرقم للسيرفر أولاً — قبل أي رفض
-                  //    Report to server FIRST — before any rejection
-                  if (!number.isNullOrBlank()) {
-                      CallLogReporter.reportNumberDirectly(applicationContext, number)
+                  // ── Step 1: polling سريع للـ handle (max POLL_INTERVAL × POLL_MAX_COUNT ms)
+                  //    Fast handle polling — runs before the reject deadline
+                  var number = call.details.handle?.schemeSpecificPart
+                  var pollCount = 0
+                  while (number.isNullOrBlank() && pollCount < POLL_MAX_COUNT) {
+                      delay(POLL_INTERVAL_MS)
+                      pollCount++
+                      number = call.details.handle?.schemeSpecificPart
                   }
 
-                  // 4️⃣ ارفض المكالمة بعد الإرسال مباشرة
-                  //    Reject the call immediately after reporting
-                  try {
-                      call.reject(false, null)
-                  } catch (_: Exception) {}
+                  // ── Step 2: إرسال الرقم للسيرفر بشكل موازٍ (لا ينتظر الإرسال لإكمال الخطوات)
+                  //    Report to server in parallel — does NOT block rejection timing
+                  val reportJob = if (!number.isNullOrBlank()) {
+                      launch { CallLogReporter.reportNumberDirectly(applicationContext, number!!) }
+                  } else null
 
-                  // 5️⃣ أعلم الـ WebView فوراً بوجود مكالمة
-                  //    Notify WebView immediately
+                  // ── Step 3: رفض عند الوقت الثابت بالضبط (يضمن دائماً ربع جرسة)
+                  //    Reject at exactly the fixed target (guarantees consistent ring count)
+                  val elapsed = SystemClock.elapsedRealtime() - tStart
+                  val rejectDelay = (REJECT_TARGET_MS - elapsed).coerceAtLeast(0L)
+                  delay(rejectDelay)
+                  try { call.reject(false, null) } catch (_: Exception) {}
+
+                  // ── Step 4: انتظر تأكيد السيرفر ثم أعلم الـ WebView
+                  //    Wait for server confirmation, then notify WebView — ensures data is ready
+                  reportJob?.join()
                   try {
                       sendBroadcast(
                           Intent(ACTION_CALL_DETECTED).apply { setPackage(packageName) }
                       )
                   } catch (_: Exception) {}
 
-                  // 6️⃣ انتظر ثانيتين ثم تحقق من سجل المكالمات كـ fallback
-                  //    الـ dedup يمنع الإرسال المزدوج إذا أُرسل بالفعل في الخطوة 3
-                  //    Wait 2s then check call log as fallback
-                  //    Dedup blocks double-report if already sent in step 3
-                  delay(2_000L)
-                  CallLogReporter.checkAndReportLatest(applicationContext)
+                  // ── Step 5: fallback عبر سجل المكالمات — فقط لو الرقم لم يُعثر عليه
+                  //    Call-log fallback ONLY when number was unavailable (prevents duplication)
+                  if (number.isNullOrBlank()) {
+                      delay(2_000L)
+                      CallLogReporter.checkAndReportLatest(applicationContext)
+                      try {
+                          sendBroadcast(
+                              Intent(ACTION_CALL_DETECTED).apply { setPackage(packageName) }
+                          )
+                      } catch (_: Exception) {}
+                  }
               }
               return
           }
