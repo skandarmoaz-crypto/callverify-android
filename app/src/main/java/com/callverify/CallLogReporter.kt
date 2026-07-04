@@ -72,7 +72,7 @@ object CallLogReporter {
 
     // نافذة 30 ثانية: تمنع كل تكرارات المكالمة الواحدة دون حجب مكالمات جديدة
     // 30s window: blocks all duplicates of one call without blocking new calls
-    private const val DEDUP_WINDOW_MS = 30_000L
+    private const val DEDUP_WINDOW_MS = 3_000L  // ✅ مُخفَّض من 30s إلى 3s — كل مكالمة منفصلة تُحسب
 
     // RAM cache — يُسرّع الفحص بدون قراءة SharedPrefs في كل مرة
     // RAM cache — speeds up checks without reading SharedPrefs every time
