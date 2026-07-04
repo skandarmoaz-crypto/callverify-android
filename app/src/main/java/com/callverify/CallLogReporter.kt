@@ -37,7 +37,11 @@
 
       // نافذة التكرار: 30 ثانية كافية للمكالمة الواحدة — أقل من 60s السابقة
       // Dedup window: 30s is sufficient per call — reduced from previous 60s
-      private const val DEDUP_WINDOW_MS = 30_000L
+      // 🔧 fix: 30_000→5_000 — 30s كان يحجب مكالمات شرعية (alternating bug)
+        //    5s كافية لمنع duplicate نفس الـ event، وتسمح بمكالمة جديدة بعد 5 ثواني
+        // 🔧 fix: 30s window was blocking legitimate new calls (alternating-call bug)
+        //    5s is enough to dedup same-call duplicates (arrive in ms), allows new call after 5s
+        private const val DEDUP_WINDOW_MS = 5_000L
 
       // RAM dedup (تُصفَّر عند إعادة التشغيل — SharedPrefs تسد الفجوة)
       @Volatile private var lastDedupNumber: String? = null
