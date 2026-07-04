@@ -30,9 +30,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.google.android.material.switchmaterial.SwitchMaterial
 
-const val DEFAULT_BACKEND_URL   = "https://listen-to-me--emoazvjd8.replit.app"
-const val DEFAULT_APP_SECRET    = "callverify-app-secret-2024"
-const val PREF_AUTO_REJECT      = "auto_reject"
+const val DEFAULT_BACKEND_URL = "https://listen-to-me--emoazvjd8.replit.app"
+const val DEFAULT_APP_SECRET  = "callverify-app-secret-2024"
+const val PREF_AUTO_REJECT    = "auto_reject"
 
 class MainActivity : AppCompatActivity() {
 
@@ -70,12 +70,19 @@ class MainActivity : AppCompatActivity() {
         autoRejectSwitch = findViewById(R.id.autoRejectSwitch)
         statusText       = findViewById(R.id.autoRejectStatus)
 
-        // استعادة الحالة المحفوظة | Restore saved state
-        autoRejectSwitch.isChecked = prefs.getBoolean(PREF_AUTO_REJECT, false)
-        updateStatusText(autoRejectSwitch.isChecked)
+        val savedValue = prefs.getBoolean(PREF_AUTO_REJECT, false)
+        autoRejectSwitch.isChecked = savedValue
+
+        // ⚡ تحديث الـ RAM cache في الـ InCallService فوراً لأول مرة
+        CallVerifyInCallService.autoRejectEnabled = savedValue
+        updateStatusText(savedValue)
 
         autoRejectSwitch.setOnCheckedChangeListener { _, isChecked ->
+            // ① حفظ في SharedPrefs (يصل لـ InCallService عبر listener)
             prefs.edit().putBoolean(PREF_AUTO_REJECT, isChecked).apply()
+            // ② تحديث الـ RAM cache مباشرة (حتى لو الـ listener تأخر)
+            // ② Update RAM cache directly (in case listener is slow)
+            CallVerifyInCallService.autoRejectEnabled = isChecked
             updateStatusText(isChecked)
         }
 
@@ -97,7 +104,7 @@ class MainActivity : AppCompatActivity() {
         }
         webView.loadUrl(DEFAULT_BACKEND_URL)
 
-        // ─── تشغيل خدمة المراقبة ───────────────────────────────────────────────
+        // ─── تشغيل خدمة المراقبة الخلفية ─────────────────────────────────────
         try {
             val svc = Intent(this, CallService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc)
