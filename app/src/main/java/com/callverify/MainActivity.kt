@@ -134,7 +134,13 @@
               loadWithOverviewMode = true
               useWideViewPort      = true
               databaseEnabled      = true
+              // ✅ إلغاء الـ cache تماماً — يضمن أن كل reload يجيب أحدث بيانات من السيرفر
+              // ✅ Disable cache entirely — guarantees every reload fetches fresh data from server
+              cacheMode            = android.webkit.WebSettings.LOAD_NO_CACHE
           }
+          // ✅ مسح أي cache قديم من السيرفر السابق عند أول تشغيل
+          // ✅ Clear any old cache from the previous server on first launch
+          webView.clearCache(true)
           webView.webViewClient = object : WebViewClient() {
               override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                   val url = request.url.toString()
