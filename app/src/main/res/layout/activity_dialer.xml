@@ -13,6 +13,8 @@
         android:inputType="phone"
         android:hint="رقم الهاتف"
         android:textSize="22sp"
+        android:textDirection="ltr"
+        android:textAlignment="viewStart"
         android:layout_marginBottom="24dp" />
 
     <Button
