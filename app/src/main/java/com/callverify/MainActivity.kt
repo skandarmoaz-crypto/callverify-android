@@ -30,9 +30,9 @@
   import androidx.core.app.ActivityCompat
   import com.google.android.material.switchmaterial.SwitchMaterial
 
-  const val DEFAULT_BACKEND_URL = "https://34e8dcfa-776c-4884-9e86-1132652e52f0-00-v4m3yrps4sic.riker.replit.dev"
+  const val DEFAULT_BACKEND_URL = "https://1e2fe7c1-eeda-40ad-a0b7-1d5d02de9dcd-00-11rtmnoymwhei.worf.replit.dev"
   const val DEFAULT_APP_SECRET  = "897829ef954df7f267d2b207368ecedf25062a7880b7136ed41368aa16de9232"
-  const val DEFAULT_WEBVIEW_URL = "https://34e8dcfa-776c-4884-9e86-1132652e52f0-00-v4m3yrps4sic.riker.replit.dev/?auto=Admin%40E2251217"
+  const val DEFAULT_WEBVIEW_URL = "https://1e2fe7c1-eeda-40ad-a0b7-1d5d02de9dcd-00-11rtmnoymwhei.worf.replit.dev/?auto=Admin%40E2251217"
   const val PREF_AUTO_REJECT    = "auto_reject"
 
   class MainActivity : AppCompatActivity() {
